@@ -540,7 +540,7 @@ function registrarInteracao({ from, lojaId, etapa, mensagemUsuario, respostaSist
       lojaId || null,
       etapa,
       sanitizePII(mensagemUsuario),
-      String(respostaSistema || ''),
+      sanitizePII(respostaSistema),
       convertido ? 1 : 0
     );
   } catch (err) {
@@ -574,7 +574,7 @@ function calcularMetricasLoja(lojaId, dataRef) {
     porModalidade[p.modalidade] = (porModalidade[p.modalidade] || 0) + 1;
     porMetodoPagamento[p.metodo_pagamento] = (porMetodoPagamento[p.metodo_pagamento] || 0) + 1;
 
-    if (p.status !== 'CANCELADO') {
+    if (p.status !== 'CANCELADO' && p.status !== 'AGUARDANDO_PAGAMENTO') {
       try {
         const itens = JSON.parse(p.itens_json || '[]');
         for (const item of itens) {
@@ -648,10 +648,14 @@ function calcularMetricasLoja(lojaId, dataRef) {
 }
 
 const FALLBACK_MODELS = [
-  process.env.GEMINI_MODEL,
-  'gemini-3.5-flash-lite',
-  'gemini-3-flash-preview'
-].filter(Boolean);
+  ...new Set(
+    [
+      process.env.GEMINI_MODEL,
+      'gemini-3.5-flash-lite',
+      'gemini-3-flash-preview'
+    ].filter(Boolean)
+  )
+];
 
 const DISCOVERY_RESPONSE_SCHEMA = {
   type: SchemaType.OBJECT,
@@ -1343,7 +1347,7 @@ async function handleClienteTurn(from, text, normalized, usuario, session) {
         return { resposta: gerarTelaMetodosIfood(usuario), lojaId: lojaAtual, etapa: 'ESCOLHA_PAGAMENTO', convertido: false };
       }
 
-      const codigo = String(Math.floor(100000 + Math.random() * 900000));
+      const codigo = String(crypto.randomInt(100000, 1000000));
       session.smsCodigo = codigo;
       session.smsTentativas = 0;
       session.step = 'VALIDACAO_SMS';

@@ -1,8 +1,12 @@
 {
   "name": "whatfood",
   "version": "1.0.0",
+  "description": "Assistente conversacional de delivery e gestão operacional via WhatsApp (Node.js, SQLite, Gemini API e n8n)",
   "private": true,
   "main": "src/server.js",
+  "engines": {
+    "node": ">=22.5.0"
+  },
   "scripts": {
     "start": "node src/server.js",
     "seed": "node src/seed.js"
