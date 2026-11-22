@@ -1,0 +1,320 @@
+{
+  "name": "WhatFood - Fechamento de Expediente e Destilação de Contexto",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "triggerAtHour": 23,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "id": "node-schedule-23h",
+      "name": "Agendamento Diário 23h",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://localhost:3000/interno/lojas/1/fechamento",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{$env.INTERNAL_API_KEY}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-get-fechamento",
+      "name": "Buscar Dados de Fechamento",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-tem-interacoes",
+              "leftValue": "={{ $json.tem_interacoes }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-if-interacoes",
+      "name": "Houve Movimento Hoje?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://generativelanguage.googleapis.com/v1beta/models/' + ($env.GEMINI_MODEL || 'gemini-3.5-flash-lite') + ':generateContent?key=' + $env.GEMINI_API_KEY }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'Analise os dados de fechamento da loja ' + ($json.loja?.nome || 'WhatFood') + ' em ' + $json.data_referencia + ' e responda estritamente em JSON.\\n\\nMétricas SQL:\\n' + JSON.stringify($json.metricas_sql) + '\\n\\nInterações Anonimizadas:\\n' + JSON.stringify($json.interacoes_anonimizadas) }] }], generationConfig: { responseMimeType: 'application/json', responseSchema: { type: 'OBJECT', properties: { contexto: { type: 'OBJECT', properties: { resumo_qualitativo: { type: 'STRING' }, itens_nao_encontrados: { type: 'ARRAY', items: { type: 'OBJECT', properties: { termo: { type: 'STRING' }, ocorrencias: { type: 'INTEGER' } }, required: ['termo', 'ocorrencias'] } }, motivos_abandono: { type: 'ARRAY', items: { type: 'OBJECT', properties: { motivo: { type: 'STRING' }, ocorrencias: { type: 'INTEGER' } }, required: ['motivo', 'ocorrencias'] } }, observacoes_recorrentes: { type: 'ARRAY', items: { type: 'OBJECT', properties: { termo: { type: 'STRING' }, ocorrencias: { type: 'INTEGER' } }, required: ['termo', 'ocorrencias'] } } }, required: ['resumo_qualitativo', 'itens_nao_encontrados', 'motivos_abandono', 'observacoes_recorrentes'] }, relatorio_texto: { type: 'STRING' }, alertas: { type: 'ARRAY', items: { type: 'OBJECT', properties: { tipo: { type: 'STRING' }, severidade: { type: 'STRING' }, mensagem: { type: 'STRING' } }, required: ['tipo', 'severidade', 'mensagem'] } } }, required: ['contexto', 'relatorio_texto', 'alertas'] } } }) }}",
+        "options": {}
+      },
+      "id": "node-gemini-destilar",
+      "name": "Gemini - Destilar Contexto Diário",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        920,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const geminiResp = $input.first().json;\nconst fechamento = $('Buscar Dados de Fechamento').first().json;\nconst rawText = geminiResp?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';\n\nlet parsed;\ntry {\n  parsed = typeof rawText === 'string' ? JSON.parse(rawText) : rawText;\n} catch (err) {\n  parsed = {\n    contexto: {\n      resumo_qualitativo: 'Falha ao interpretar JSON do Gemini: ' + err.message,\n      itens_nao_encontrados: [],\n      motivos_abandono: [],\n      observacoes_recorrentes: []\n    },\n    relatorio_texto: 'Fechamento gerado com fallback devido a erro de parsing.',\n    alertas: []\n  };\n}\n\nconst contexto = parsed.contexto || {\n  resumo_qualitativo: '',\n  itens_nao_encontrados: [],\n  motivos_abandono: [],\n  observacoes_recorrentes: []\n};\nconst relatorio_texto = String(parsed.relatorio_texto || '').trim();\nconst alertas = Array.isArray(parsed.alertas) ? parsed.alertas : [];\nconst alertas_mensagem = alertas\n  .map((a) => `[${a.severidade || 'INFO'} | ${a.tipo || 'GERAL'}] ${a.mensagem}`)\n  .join('\\n');\n\nreturn [\n  {\n    json: {\n      loja_id: fechamento.loja?.id || 1,\n      loja_nome: fechamento.loja?.nome || 'Doce da Vila',\n      data_referencia: fechamento.data_referencia,\n      contexto,\n      relatorio_texto,\n      alertas,\n      alertas_mensagem\n    }\n  }\n];"
+      },
+      "id": "node-code-parse",
+      "name": "Preparar Payload Unificado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1160,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:3000/interno/lojas/1/contexto",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{$env.INTERNAL_API_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ data_referencia: $json.data_referencia, contexto: $json.contexto, relatorio_texto: $json.relatorio_texto, alertas: $json.alertas }) }}",
+        "options": {}
+      },
+      "id": "node-post-contexto",
+      "name": "Salvar Contexto no SQLite",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:3000/interno/alertas/notificar",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{$env.INTERNAL_API_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ canal: 'LOJISTA_RELATORIO_DIARIO', titulo: 'Relatório Diário - ' + $json.loja_nome + ' (' + $json.data_referencia + ')', mensagem: $json.relatorio_texto }) }}",
+        "options": {}
+      },
+      "id": "node-post-relatorio",
+      "name": "Enviar Relatório Diário",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-tem-alertas",
+              "leftValue": "={{ $json.alertas.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-if-alertas",
+      "name": "Há Alertas de Gargalo?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:3000/interno/alertas/notificar",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{$env.INTERNAL_API_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ canal: 'LOJISTA_ALERTA_GARGALO', titulo: 'Alerta de Gargalo - ' + $json.loja_nome + ' (' + $json.data_referencia + ')', mensagem: $json.alertas_mensagem }) }}",
+        "options": {}
+      },
+      "id": "node-post-alerta-gargalo",
+      "name": "Enviar Alerta Analítico",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1700,
+        380
+      ]
+    }
+  ],
+  "connections": {
+    "Agendamento Diário 23h": {
+      "main": [
+        [
+          {
+            "node": "Buscar Dados de Fechamento",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar Dados de Fechamento": {
+      "main": [
+        [
+          {
+            "node": "Houve Movimento Hoje?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Houve Movimento Hoje?": {
+      "main": [
+        [
+          {
+            "node": "Gemini - Destilar Contexto Diário",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Gemini - Destilar Contexto Diário": {
+      "main": [
+        [
+          {
+            "node": "Preparar Payload Unificado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar Payload Unificado": {
+      "main": [
+        [
+          {
+            "node": "Salvar Contexto no SQLite",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Enviar Relatório Diário",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Há Alertas de Gargalo?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Há Alertas de Gargalo?": {
+      "main": [
+        [
+          {
+            "node": "Enviar Alerta Analítico",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

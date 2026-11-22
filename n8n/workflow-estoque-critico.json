@@ -1,0 +1,167 @@
+{
+  "name": "WhatFood - Alerta de Estoque Crítico (Tempo Real)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatfood-estoque",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "node-webhook-estoque",
+      "name": "Webhook Estoque Crítico",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ],
+      "webhookId": "whatfood-estoque"
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json;\nconst payload = raw.body ?? raw;\nconst itens = Array.isArray(payload.itens_criticos) ? payload.itens_criticos : [];\nconst temZerado = itens.some((item) => item.nivel === 'ZERADO');\nconst urgencia = temZerado ? 'CRITICA' : 'ATENCAO';\n\nconst linhas = itens.map((item) => {\n  const status = item.nivel === 'ZERADO' ? 'ZERADO (pausado automaticamente no cardápio)' : 'BAIXO';\n  return `- ${item.nome}: restante ${item.quantidade_atual} un. (mínimo: ${item.estoque_minimo} un.) [${status}]`;\n});\n\nconst cabecalho = temZerado\n  ? `Atenção imediata na loja ${payload.loja_nome} (Pedido #${payload.pedido_id}): há item(ns) zerado(s) e pausado(s) no cardápio.`\n  : `Aviso preventivo na loja ${payload.loja_nome} (Pedido #${payload.pedido_id}): há item(ns) com estoque próximo do mínimo.`;\n\nconst mensagem = [cabecalho, '', ...linhas].join('\\n');\n\nreturn [\n  {\n    json: {\n      evento: payload.evento || 'ESTOQUE_CRITICO',\n      loja_id: payload.loja_id,\n      loja_nome: payload.loja_nome || 'Loja',\n      pedido_id: payload.pedido_id,\n      urgencia,\n      tem_zerado: temZerado,\n      itens_criticos: itens,\n      mensagem,\n      gerado_em: payload.gerado_em || new Date().toISOString()\n    }\n  }\n];"
+      },
+      "id": "node-code-classificar",
+      "name": "Classificar Urgência e Montar Mensagem",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-urgencia-critica",
+              "leftValue": "={{ $json.urgencia }}",
+              "rightValue": "CRITICA",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-if-urgencia",
+      "name": "Urgência Crítica?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        720,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:3000/interno/alertas/notificar",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{$env.INTERNAL_API_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ canal: 'LOJISTA_WHATSAPP', titulo: '🚨 CRÍTICO: Item Zerado e Pausado (' + $json.loja_nome + ')', mensagem: $json.mensagem }) }}",
+        "options": {}
+      },
+      "id": "node-http-critica",
+      "name": "Notificar Lojista - Estoque Zerado",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        980,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:3000/interno/alertas/notificar",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{$env.INTERNAL_API_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ canal: 'LOJISTA_WHATSAPP', titulo: '⚠️ Atenção: Estoque Baixo (' + $json.loja_nome + ')', mensagem: $json.mensagem }) }}",
+        "options": {}
+      },
+      "id": "node-http-atencao",
+      "name": "Notificar Lojista - Estoque Baixo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        980,
+        420
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Estoque Crítico": {
+      "main": [
+        [
+          {
+            "node": "Classificar Urgência e Montar Mensagem",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classificar Urgência e Montar Mensagem": {
+      "main": [
+        [
+          {
+            "node": "Urgência Crítica?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Urgência Crítica?": {
+      "main": [
+        [
+          {
+            "node": "Notificar Lojista - Estoque Zerado",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notificar Lojista - Estoque Baixo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
